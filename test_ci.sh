@@ -16,7 +16,7 @@ apt-get install -y \
   libc6-dev-arm64-cross >/dev/null 2>&1
 
 echo "Testing Go Build..."
-cd "$repo_root/modules/driftnet"
+cd "$repo_root/driftnet"
 go mod tidy
 env CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
   go build -v -o driftnetd ./cmd/driftnetd 2>go_error.log
@@ -28,7 +28,12 @@ fi
 
 echo "Testing eBPF Build..."
 cd "$repo_root/modules/ebpf_kernel"
-clang -O2 -target bpf -g -D__TARGET_ARCH_arm64 \
+ARCH_FLAG="-D__TARGET_ARCH_x86 -I/usr/include/x86_64-linux-gnu"
+if [[ "$(uname -m)" == "aarch64" ]]; then
+  ARCH_FLAG="-D__TARGET_ARCH_arm64 -I/usr/include/aarch64-linux-gnu"
+fi
+
+clang -O2 -target bpf -g $ARCH_FLAG \
   -c bpf_probe.c -o bpf_probe.o 2>ebpf_error.log
 
 if [[ -s ebpf_error.log ]]; then
