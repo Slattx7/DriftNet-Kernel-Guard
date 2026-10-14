@@ -1,12 +1,17 @@
-# Node.js
+# ==============================================================================
+# DriftNet-Kernel-Guard - Comprehensive Git Ignore
+# ==============================================================================
+
+# Node.js & Web UI Builds
 node_modules/
-.npm
+.npm/
 .next/
 out/
 build/
 dist/
+**/package-lock.json
 
-# Go
+# Go & C/C++ Compiled Artifacts
 *.exe
 *.exe~
 *.dll
@@ -15,30 +20,48 @@ dist/
 *.test
 *.out
 *.o
-*.db
+*.a
+bin/
 /driftnet/driftnetd
 /driftnetd
+modules/compute/vulkan_engine_host
 
-# Environment
+# Environment & Sensitive Keys
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
 
-# OS
+# OS & Editor Artifacts
 .DS_Store
 Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
 
-# Heavy Binaries & Local AI Models
+# Heavy Binaries, Compression Archives, & Local AI Weights
+*.tar.gz
+*.zip
+!magisk_module/OMNI_Magisk_Release.zip
+*.gguf
+*.onnx
+*.bin
+*.tflite
 modules/local_ai/cmake-*
 modules/local_ai/models/
-*.gguf
-
-# Ignore massive binaries and databases
-*.tar.gz
-*.gguf
-events.db
 modules/local_ai/llama.cpp/models/*
 omni_update.tar.gz
-modules/compute/vulkan_engine_host
+
+# Runtime Databases, Logs & WAL
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+events.db
+events.db*
+*.log
+logs/
+package-lock.json
