@@ -1,3 +1,4 @@
+//go:build ignore
 /*
  * coverage_test_v2.c - does the REAL DriftNet probe hooks actually see these?
  *

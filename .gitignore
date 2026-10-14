@@ -41,3 +41,4 @@ modules/local_ai/models/
 events.db
 modules/local_ai/llama.cpp/models/*
 omni_update.tar.gz
+modules/compute/vulkan_engine_host

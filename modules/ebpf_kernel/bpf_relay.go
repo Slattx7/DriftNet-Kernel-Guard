@@ -1,16 +1,19 @@
+//go:build linux
 package main
 
 import (
 	"bufio"
 	"encoding/json"
+	"flag"
 	"log"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
-	"net/url"
 
 	"github.com/cilium/ebpf"
 	"github.com/gorilla/websocket"
@@ -30,83 +33,130 @@ type Event struct {
 	AppVersion string      `json:"app_version"`
 }
 
-func main() {
-	u := url.URL{Scheme: "ws", Host: "127.0.0.1:8787", Path: "/ws/ingest"}
-	
-	var c *websocket.Conn
-	var err error
+type RelayClient struct {
+	sync.Mutex
+	conn *websocket.Conn
+	url  string
+}
+
+func (r *RelayClient) Connect() {
 	for {
-		c, _, err = websocket.DefaultDialer.Dial(u.String(), nil)
+		c, _, err := websocket.DefaultDialer.Dial(r.url, nil)
 		if err == nil {
-			break
+			r.Lock()
+			r.conn = c
+			r.Unlock()
+			log.Printf("Connected to driftnetd at %s", r.url)
+			go r.readLoop(c)
+			return
 		}
-		log.Printf("wait for driftnetd...")
-		time.Sleep(1 * time.Second)
+		log.Printf("wait for driftnetd at %s...", r.url)
+		time.Sleep(2 * time.Second)
 	}
-	defer c.Close()
+}
 
-	log.Printf("Connected to driftnetd")
+func (r *RelayClient) Send(payload []byte) {
+	for {
+		r.Lock()
+		c := r.conn
+		r.Unlock()
 
-	go func() {
-		for {
-			_, msg, err := c.ReadMessage()
-			if err != nil {
-				return
+		if c == nil {
+			r.Connect()
+			continue
+		}
+
+		err := c.WriteMessage(websocket.TextMessage, payload)
+		if err == nil {
+			return
+		}
+
+		log.Printf("Send error (%v), reconnecting...", err)
+		r.Lock()
+		if r.conn == c {
+			c.Close()
+			r.conn = nil
+		}
+		r.Unlock()
+		time.Sleep(1 * time.Second)
+		r.Connect()
+	}
+}
+
+func (r *RelayClient) readLoop(c *websocket.Conn) {
+	for {
+		_, msg, err := c.ReadMessage()
+		if err != nil {
+			r.Lock()
+			if r.conn == c {
+				r.conn = nil
 			}
-			var resp struct {
-				Action  string `json:"action"`
-				Payload struct {
-					PID int `json:"pid"`
-				} `json:"payload"`
+			r.Unlock()
+			c.Close()
+			return
+		}
+		var resp struct {
+			Action  string `json:"action"`
+			Payload struct {
+				PID int `json:"pid"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal(msg, &resp); err == nil && resp.Action == "BLOCK" {
+			if resp.Payload.PID <= 0 {
+				log.Printf("BLOCK command received with invalid PID %d, ignoring", resp.Payload.PID)
+				continue
 			}
-			if err := json.Unmarshal(msg, &resp); err == nil && resp.Action == "BLOCK" {
-				// Load the pinned map and insert the PID for Ring-0 killing
-				blacklistMap, err := ebpf.LoadPinnedMap("/sys/fs/bpf/blacklist_pids", nil)
-				if err == nil {
-					key := uint32(resp.Payload.PID)
-					val := uint32(9) // SIGKILL
-					blacklistMap.Put(key, val)
-					blacklistMap.Close()
-					syscall.Kill(resp.Payload.PID, syscall.SIGKILL)
-					log.Printf("Ring-0 Kill Authorized: inserted PID %d into kernel blacklist map and delivered instant SIGKILL", key)
-				} else {
-					log.Printf("Failed to load pinned map: %v", err)
-				}
+			blacklistMap, err := ebpf.LoadPinnedMap("/sys/fs/bpf/blacklist_pids", nil)
+			if err == nil {
+				key := uint32(resp.Payload.PID)
+				val := uint32(9) // SIGKILL
+				blacklistMap.Put(key, val)
+				blacklistMap.Close()
+				syscall.Kill(resp.Payload.PID, syscall.SIGKILL)
+				log.Printf("Ring-0 Kill Authorized: inserted PID %d into kernel blacklist map and delivered instant SIGKILL", key)
+			} else {
+				log.Printf("Failed to load pinned map: %v", err)
 			}
 		}
-	}()
+	}
+}
+
+func main() {
+	targetURL := flag.String("url", "ws://127.0.0.1:8787/ws/ingest", "DriftNet ingest WebSocket URL")
+	flag.Parse()
+
+	rawURL := *targetURL
+	if envURL := os.Getenv("DRIFTNET_URL"); envURL != "" {
+		rawURL = envURL
+	}
+
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		log.Fatalf("Invalid driftnet URL %q: %v", rawURL, err)
+	}
+
+	client := &RelayClient{url: u.String()}
+	client.Connect()
 
 	// PID: 123 | UID: 0 | COMM: test | FNAME: /etc/passwd
 	re := regexp.MustCompile(`PID:\s*(\d+)\s*\|\s*UID:\s*(\d+)\s*\|\s*COMM:\s*(.*?)\s*\|\s*FNAME:\s*(.*)`)
-	
+
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
 		line := scanner.Text()
 		matches := re.FindStringSubmatch(line)
 		if len(matches) == 5 {
 			pid, _ := strconv.Atoi(matches[1])
-			// uid, _ := strconv.Atoi(matches[2])
-			// comm := strings.TrimSpace(matches[3])
 			fname := strings.TrimSpace(matches[4])
-			
+
 			kind := "sys_openat"
 			if strings.HasPrefix(fname, "IP:") {
 				kind = "sys_connect"
-				// A hardcoded "if fname starts with 185.123. -> kill immediately, no
-				// scoring, no LLM" fast-path used to live here ("Lazy AI Warm Cache").
-				// It bypassed the entire novelty/triage pipeline for that one demo IP
-				// and logged a message implying the AI made the call when nothing
-				// scored or triaged anything. Removed: every connect event, including
-				// ones aimed at a known-bad IP, must go through driftnetd's real
-				// scoring and come back as an actual BLOCK verdict before anything
-				// gets killed. If you want a fast, deterministic block for known-bad
-				// indicators, implement it as a real, visible rule in
-				// driftnet/internal/rules (see rules.go), not a silent shortcut here.
 			} else if strings.HasPrefix(fname, "EXEC:") {
 				kind = "sys_execve"
 				fname = strings.TrimPrefix(fname, "EXEC:")
 			}
-			
+
 			comm := strings.TrimSpace(matches[3])
 			uid, _ := strconv.Atoi(matches[2])
 			ev := Event{
@@ -116,9 +166,9 @@ func main() {
 				Detail:     EventDetail{PID: pid, UID: uid, FName: fname},
 				AppVersion: "1.0",
 			}
-			
+
 			payload, _ := json.Marshal(ev)
-			c.WriteMessage(websocket.TextMessage, payload)
+			client.Send(payload)
 		}
 	}
 }

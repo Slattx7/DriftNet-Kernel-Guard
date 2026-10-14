@@ -1,3 +1,4 @@
+//go:build linux
 package main
 
 import (
@@ -136,6 +137,10 @@ func main() {
 			ip := net.IPv4(event.FName[3], event.FName[4], event.FName[5], event.FName[6])
 			port := binary.BigEndian.Uint16(event.FName[7:9])
 			fname = fmt.Sprintf("IP:%s:%d", ip.String(), port)
+		} else if event.FName[0] == 'I' && event.FName[1] == 'P' && event.FName[2] == '6' && event.FName[3] == ':' {
+			ip := net.IP(event.FName[4:20])
+			port := binary.BigEndian.Uint16(event.FName[20:22])
+			fname = fmt.Sprintf("IP:[%s]:%d", ip.String(), port)
 		} else {
 			fname = string(bytes.TrimRight(event.FName[:], "\x00"))
 		}

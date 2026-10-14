@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"log"
 	"net/http"
@@ -108,9 +109,17 @@ func main() {
 		}
 
 		if strings.Contains(note, "VERDICT: BLOCK") {
-			log.Printf("ACTIVE MITIGATION TRIGGERED for seq=%d: sending BLOCK command", ev.Seq)
+			pid := 0
+			var detail struct {
+				PID int `json:"pid"`
+			}
+			if err := json.Unmarshal(ev.Detail, &detail); err == nil && detail.PID > 0 {
+				pid = detail.PID
+			}
+			log.Printf("ACTIVE MITIGATION TRIGGERED for seq=%d (pid=%d): sending BLOCK command", ev.Seq, pid)
 			reply("BLOCK", map[string]interface{}{
-				"seq": ev.Seq,
+				"seq":    ev.Seq,
+				"pid":    pid,
 				"reason": note,
 			})
 		}
